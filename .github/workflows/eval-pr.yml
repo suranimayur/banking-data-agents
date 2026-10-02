@@ -86,7 +86,7 @@ jobs:
 
       - name: comment on the pull request
         if: always() && github.event_name == 'pull_request'
-        uses: marocchino/sticky-pull-request-comment@v2
+        uses: marocchino/sticky-pull-request-comment@v3
         with:
           path: eval-summary.md
           header: eval-gate
