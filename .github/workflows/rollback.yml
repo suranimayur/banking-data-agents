@@ -46,7 +46,7 @@ jobs:
     # An incident is not a reason to bypass the control that keeps production safe.
     environment: ${{ inputs.environment }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: astral-sh/setup-uv@v5
         with:
