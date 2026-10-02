@@ -1,0 +1,133 @@
+name: Eval (nightly)
+
+# The nightly run is where the expensive, slow and occasionally flaky things live:
+# the full suite, the adversarial probes, and the trend. It does not block a merge —
+# a gate nobody can fix at merge time is a gate people learn to bypass — but it does
+# open an issue when a metric moves, which is what turns a slow drift into a
+# conversation.
+
+on:
+  schedule:
+    - cron: "0 2 * * *" # 02:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  issues: write
+
+env:
+  UV_FROZEN: "1"
+  PYTHONIOENCODING: utf-8
+
+jobs:
+  full-suite:
+    name: full eval suite
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: prepare the lake
+        run: |
+          uv run bda data generate
+          uv run bda pipeline run
+
+      - name: run the deterministic suite
+        run: uv run bda eval --suite deterministic --no-report
+
+      - name: compare with the committed baseline
+        id: compare
+        run: |
+          python - <<'PY'
+          import json, os, pathlib
+
+          baseline_path = pathlib.Path("evals/reports/baseline.json")
+          current_path = pathlib.Path("data/artifacts/evals/eval-report-deterministic.json")
+          current = json.loads(current_path.read_text())["summary"]
+
+          if not baseline_path.exists():
+              # Written to the workspace and uploaded as an artifact, so a maintainer
+              # can review and commit it. Not committed by the workflow: a baseline
+              # that moves on its own is a baseline that hides the regression it was
+              # supposed to catch.
+              pathlib.Path("evals/reports").mkdir(parents=True, exist_ok=True)
+              baseline_path.write_text(json.dumps({"summary": current}, indent=2))
+              print("no committed baseline found; wrote one to evals/reports/baseline.json")
+              print("commit it once reviewed, or the nightly gate compares against nothing")
+              with open(os.environ["GITHUB_OUTPUT"], "a") as handle:
+                  handle.write("regression=false\n")
+                  handle.write("regression_detail=no committed baseline; candidate written\n")
+              raise SystemExit(0)
+
+          baseline = json.loads(baseline_path.read_text())["summary"]
+          score_now = current["score"]
+          score_before = baseline["score"]
+          drop = score_before - score_now
+
+          # The rule from the success criteria: a drop of more than 3% is a
+          # regression, and the bar is on the *score*, not on a single case.
+          regression = drop > 0.03 or current["critical_failed"] > 0
+          detail = (
+              f"score {score_before * 100:.1f}% -> {score_now * 100:.1f}% "
+              f"({drop * 100:+.1f} pp), critical failures {current['critical_failed']}"
+          )
+          print(detail)
+
+          with open(os.environ["GITHUB_OUTPUT"], "a") as handle:
+              handle.write(f"regression={'true' if regression else 'false'}\n")
+              handle.write(f"regression_detail={detail}\n")
+          PY
+
+      - name: open a regression issue
+        if: steps.compare.outputs.regression == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const detail = `${{ steps.compare.outputs.regression_detail }}`;
+            const title = `Eval regression: ${detail}`;
+            const body = [
+              "The nightly evaluation run moved beyond the allowed 3% drop.",
+              "",
+              `**${detail}**`,
+              "",
+              `Run: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+              "",
+              "A regression here is a product incident, not a test failure: it means an",
+              "answer that used to be right is now wrong, or a refusal that used to happen",
+              "no longer does. Triage it before the next release.",
+            ].join("\n");
+
+            const existing = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: "open",
+              labels: "eval-regression",
+            });
+            if (existing.data.some((issue) => issue.title === title)) {
+              core.info("an issue for this regression is already open");
+              return;
+            }
+
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title,
+              body,
+              labels: ["eval-regression", "incident"],
+            });
+
+      - name: upload the report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          # The dated report is an artifact rather than a commit: its value is the
+          # trend over many runs, and a repository that gains a file every night for
+          # a year is a repository nobody can read.
+          name: eval-report-nightly
+          path: |
+            data/artifacts/evals/
+            evals/reports/baseline.json
+          if-no-files-found: warn
+          retention-days: 90

@@ -1,0 +1,148 @@
+product: transaction
+version: 1.6.0
+domain: payments
+owner: payments-data@bank.example
+steward: data-steward@bank.example
+description: >-
+  Every transaction across all three rails — core banking, cards and the payments
+  switch — conformed into one shape with a shared channel vocabulary. The same
+  product feeds fraud detection, finance, customer analytics, regulatory
+  reporting and ML feature pipelines. That reuse is what makes it a product
+  rather than a table.
+grain: one row per transaction
+primary_key: [transaction_id]
+classification: confidential
+refresh:
+  schedule: "hourly"
+  job: pipeline:gold.transaction
+sla:
+  freshness_hours: 1
+  availability: "99.9% monthly"
+  row_count_floor: 1000
+
+allowed_use:
+  - fraud_detection
+  - regulatory_reporting
+  - finance_reconciliation
+  - customer_analytics
+  - ml_feature_engineering
+not_allowed_use:
+  - marketing_targeting
+  - sale_to_third_party
+
+columns:
+  - name: transaction_id
+    type: string
+    description: Globally unique across all three source rails
+
+  - name: customer_id
+    type: string
+    pii: true
+
+  - name: account_id
+    type: string
+    description: Null for card-rail transactions, which attach to a card instead
+
+  - name: transaction_ts
+    type: timestamp
+  - name: transaction_date
+    type: date
+  - name: transaction_month
+    type: date
+    description: Truncated to the first of the month, for time-series grouping
+  - name: transaction_hour
+    type: integer
+    range: [0, 23]
+
+  - name: amount
+    type: decimal(18,2)
+    unit: mixed
+    description: >-
+      Absolute value, in the transaction's own currency. Card-rail international
+      transactions are recorded in their original currency, so an unfiltered SUM
+      mixes currencies — treat it as a data hazard and filter on currency.
+    note: Not safe to sum across currencies without conversion.
+
+  - name: currency
+    type: string
+    enum: [INR, USD]
+
+  - name: debit_credit
+    type: string
+    enum: [DEBIT, CREDIT]
+
+  - name: signed_amount
+    type: decimal(18,2)
+    definition: -amount for a DEBIT, +amount for a CREDIT
+
+  - name: channel
+    type: string
+    enum: [ATM, BRANCH, CASH_DEPOSIT, INTERNAL_TRANSFER, STANDING_INSTRUCTION, CHEQUE,
+           POS, ECOM, CONTACTLESS, INTERNATIONAL, UPI, NEFT, RTGS, IMPS, BILLPAY]
+    description: The source system's own channel vocabulary
+
+  - name: channel_group
+    type: string
+    enum: [ATM, BRANCH, TRANSFER, CARD, PAYMENT]
+    definition: >-
+      Conformed vocabulary across rails. Analytics that group by raw channel
+      fragment across rails; analytics that group by channel_group do not.
+    metric_ref: metric.channel_mix@1.0.0
+
+  - name: merchant_id
+    type: string
+    description: Null for non-card rails
+  - name: merchant_category
+    type: string
+    enum: [Grocery, Restaurant, Fuel, Travel, Electronics, Apparel, Healthcare, Education,
+           Utilities, Entertainment, Jewellery, Ecommerce, Telecom, Insurance, Gaming]
+  - name: merchant_country
+    type: string
+
+  - name: is_international
+    type: boolean
+    default: false
+    description: True for card transactions processed outside India
+
+  - name: card_id
+    type: string
+  - name: device_id
+    type: string
+    description: Card-rail only. A brand-new device on an established customer is a fraud signal.
+
+  - name: fraud_flag
+    type: boolean
+    description: >-
+      Confirmed fraud. Deliberately time-gated: NULL means the transaction is
+      still inside the ~90-day dispute window and the bank does not yet know,
+      TRUE means confirmed, FALSE means the window closed with nothing confirmed.
+      A NULL is therefore NOT "clean".
+    caveat: Do not treat NULL as not-fraud. Use fraud_label_status.
+    allowed_use: [fraud_detection, model_training_backtest, regulatory_reporting]
+    not_allowed_use: [customer_facing_scoring]
+
+  - name: confirmed_fraud_method
+    type: string
+    enum: [CARD_NOT_PRESENT_BURST, GEO_JUMP, MICRO_THEN_MACRO, MERCHANT_COLLUSION, ACCOUNT_TAKEOVER]
+
+  - name: fraud_label_status
+    type: string
+    enum: [CONFIRMED, CLEARED, PENDING]
+    definition: >-
+      The interpretation key for fraud_flag. PENDING means the dispute window is
+      still open. Always filter on this rather than on fraud_flag being null.
+
+  - name: source_system
+    type: string
+    enum: [s_core, s_cards, s_payments]
+    description: Which rail the transaction arrived from
+
+  - name: _gold_updated_at
+    type: timestamp
+
+consumers:
+  - data-product-copilot
+  - fraud-investigation
+  - regulatory-reporting
+  - finance_reconciliation
+  - ml_feature_pipeline

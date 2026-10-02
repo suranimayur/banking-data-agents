@@ -1,0 +1,101 @@
+name: Eval gate (PR)
+
+# Runs only when something that can change an answer changes. A README edit does not
+# need an evaluation run, and a workflow that runs on everything is a workflow people
+# start ignoring.
+#
+# This gate is *blocking*: the eval suite is deterministic and free, so there is no
+# reason to let a regression through and hope a nightly run catches it.
+
+on:
+  pull_request:
+    paths:
+      - "src/banking_data_agents/agents/**"
+      - "src/banking_data_agents/tools/**"
+      - "src/banking_data_agents/semantic/**"
+      - "src/banking_data_agents/evals/**"
+      - "src/banking_data_agents/catalog/**"
+      - "contracts/**"
+      - "semantic/metrics/**"
+      - ".github/workflows/eval-pr.yml"
+
+permissions:
+  contents: read
+  pull-requests: write
+
+env:
+  UV_FROZEN: "1"
+  PYTHONIOENCODING: utf-8
+
+jobs:
+  eval:
+    name: deterministic eval suite
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: prepare a lake
+        # The evals run against the same generated lake the tests use, so the
+        # expected row counts and metric values are real numbers rather than mocks.
+        run: |
+          uv run bda data generate
+          uv run bda pipeline run
+
+      - name: run the suite as the gate
+        # --fail-under 0.97 is the "no more than a 3% regression" rule from the
+        # success criteria, expressed against a baseline of 100% on the
+        # deterministic suite.
+        run: uv run bda eval --suite deterministic --fail-under 0.97 --no-report
+
+      - name: run the suite for the report
+        if: always()
+        run: uv run bda eval --suite deterministic
+
+      - name: summarise for the pull request
+        if: always()
+        run: |
+          python - <<'PY' > eval-summary.md
+          import json, pathlib
+
+          path = pathlib.Path("data/artifacts/evals/eval-report-deterministic.json")
+          if not path.exists():
+              print("## Eval suite\n\nNo report was produced — the run failed before writing one.")
+              raise SystemExit(0)
+
+          report = json.loads(path.read_text())
+          summary = report["summary"]
+
+          print("## Eval suite\n")
+          print(f"**{summary['passed']}/{summary['cases']} passed** — "
+                f"score {summary['score'] * 100:.1f}% (gate: 97%) — "
+                f"{summary['critical_failed']} critical failures — "
+                f"mean latency {summary['latency_ms_mean']:.0f} ms\n")
+          for reason in report.get("gate_reasons", []):
+              print(f"> gate: {reason}\n")
+          print("| Case | Agent | Outcome | Result |")
+          print("|---|---|---|---|")
+          for case in report.get("results", []):
+              mark = "pass" if case.get("passed") else "**FAIL**"
+              print(f"| `{case.get('id', '?')}` | {case.get('agent', '?')} | "
+                    f"{case.get('outcome', '?')} | {mark} |")
+          PY
+          cat eval-summary.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: comment on the pull request
+        if: always() && github.event_name == 'pull_request'
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          path: eval-summary.md
+          header: eval-gate
+
+      - name: upload the report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: eval-report-pr
+          path: data/artifacts/evals/
+          if-no-files-found: warn
+          retention-days: 30

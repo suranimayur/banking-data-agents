@@ -1,0 +1,113 @@
+name: Data pipeline
+
+# Kept separate from the agent deploy on purpose.
+#
+# The medallion run and the agents have different change cadences and different blast
+# radii: a schema change in gold does not invalidate an agent image, and an agent
+# prompt change does not require rebuilding the pipeline. Coupling them means every
+# prompt tweak re-runs the pipeline and every pipeline change redeploys the agents,
+# which is both slower and riskier than either needs to be.
+#
+# The deploy is narrowed to the pipeline stacks with `--stacks`, so this workflow
+# cannot touch the runtime, the gateway or the lake.
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Environment to deploy the pipeline to."
+        required: true
+        type: choice
+        options: [dev, staging, prod]
+        default: dev
+      run_pipeline:
+        description: "Start a medallion run after deploying."
+        required: false
+        type: boolean
+        default: true
+  push:
+    branches: [main]
+    paths:
+      - "src/banking_data_agents/pipeline/**"
+      - "src/banking_data_agents/datagen/**"
+      - "contracts/**"
+      - "semantic/metrics/**"
+      - "infra/stacks/pipelines.py"
+      - ".github/workflows/data-pipeline.yml"
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  UV_FROZEN: "1"
+  AWS_REGION: us-east-1
+
+jobs:
+  deploy-pipeline:
+    name: deploy the pipeline (${{ github.event_name == 'push' && 'dev' || inputs.environment }})
+    runs-on: ubuntu-latest
+    environment: ${{ github.event_name == 'push' && 'dev' || inputs.environment }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: assume the deploy role
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE }}
+          aws-region: ${{ env.AWS_REGION }}
+          role-session-name: gha-data-${{ github.run_id }}
+
+      - name: build and push the pipeline image
+        # The pipeline runs from the same image as everything else; only the command
+        # differs. A push to main rebuilds it so a transform change actually ships.
+        if: github.event_name == 'push'
+        run: |
+          ACCOUNT=$(aws sts get-caller-identity --query Account --output text)
+          REGISTRY="${ACCOUNT}.dkr.ecr.${AWS_REGION}.amazonaws.com"
+          aws ecr get-login-password --region "$AWS_REGION" \
+            | docker login --username AWS --password-stdin "$REGISTRY"
+          image="${REGISTRY}/bda-dev-pipeline:${GITHUB_SHA}"
+          docker build --build-arg BDA_VERSION="${GITHUB_SHA}" --tag "${image}" .
+          docker push "${image}"
+
+      - name: deploy the pipeline stacks
+        run: |
+          ENV="${{ github.event_name == 'push' && 'dev' || inputs.environment }}"
+          PREFIX="Bda$(echo "${ENV:0:1}" | tr '[:lower:]' '[:upper:]')${ENV:1}"
+          uv run --group infra bda infra deploy \
+            --env "${ENV}" \
+            --image-tag "${GITHUB_SHA}" \
+            --stacks "${PREFIX}Pipelines" "${PREFIX}Catalog" "${PREFIX}StorageLake" \
+            --yes
+
+      - name: start a run
+        if: github.event_name == 'workflow_dispatch' && inputs.run_pipeline
+        run: |
+          ENV="${{ inputs.environment }}"
+          STATE_MACHINE=$(python - <<PY
+          import json, pathlib
+          outputs = json.loads(pathlib.Path("cdk.out/${ENV}-outputs.json").read_text())
+          for stack, values in outputs.items():
+              if "Pipelines" in stack and "PipelineStateMachineArn" in values:
+                  print(values["PipelineStateMachineArn"])
+                  break
+          PY
+          )
+          if [ -z "${STATE_MACHINE}" ]; then
+            echo "::error::no pipeline state machine found in the deploy outputs" >&2
+            exit 1
+          fi
+          aws stepfunctions start-execution \
+            --state-machine-arn "${STATE_MACHINE}" \
+            --name "manual-${GITHUB_RUN_ID}" \
+            --input '{"source":"github-actions"}'
+
+      - name: summarise
+        if: always()
+        run: |
+          echo "### Data pipeline deployment" >> "$GITHUB_STEP_SUMMARY"
+          echo "Stacks: Pipelines, Catalog, StorageLake. Agent stacks were not touched." >> "$GITHUB_STEP_SUMMARY"

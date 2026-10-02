@@ -1,0 +1,146 @@
+name: CI
+
+# The cheap gates run first and in parallel, because the expensive ones are only
+# worth running if the code is syntactically sound and the unit suite is green.
+# Target: everything on this page finishes in under three minutes.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  # A second push to the same branch cancels the first: nobody is waiting for the
+  # result of a superseded commit.
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  UV_FROZEN: "1"
+  PYTHONIOENCODING: utf-8
+  # Metrics are emitted by the application; in CI they would only add JSON noise to
+  # the test output.
+  BDA_EMIT_METRICS: "0"
+
+jobs:
+  lint:
+    name: lint and types
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - name: ruff (lint)
+        run: uv run ruff check .
+      - name: ruff (format)
+        run: uv run ruff format --check .
+      # mypy covers src/ *and* infra/, so a stack that would not type-check fails
+      # here rather than during a deploy.
+      - name: mypy
+        run: uv run --group infra mypy
+
+  unit:
+    name: unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - name: pytest (unit)
+        # The unit suite includes the infrastructure tests, which synthesise every
+        # stack for every environment.
+        run: uv run --group infra pytest -m "not integration and not slow" --cov --cov-report=term-missing
+      - name: generate synthetic data and run the pipeline
+        # The pipeline is the product's foundation; a green unit suite that cannot
+        # run it end to end proves very little.
+        run: |
+          uv run bda data generate
+          uv run bda pipeline run
+          uv run bda catalog list
+      - name: data quality gate
+        run: uv run bda pipeline dq
+
+  integration:
+    name: integration tests (moto)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      # These run against moto (in-process AWS mocks) rather than Floci, so the job
+      # needs no Docker and cannot be flaky because of a container registry.
+      - name: pytest (integration)
+        run: uv run --group dev pytest -m integration
+
+  synth:
+    name: cdk synth and template checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - name: synth every environment
+        # Synthesis needs no AWS credentials, which is the point: the templates are
+        # reviewed on the pull request, not discovered on the deploy.
+        run: |
+          uv run --group infra bda infra synth --env dev
+          uv run --group infra bda infra synth --env staging
+          uv run --group infra bda infra synth --env prod
+          uv run --group infra bda infra synth --env bootstrap
+      - name: assert the templates still contain their guardrails
+        # A cheap, explicit check on the things that must never silently vanish.
+        run: |
+          python - <<'PY'
+          import json, pathlib, sys
+
+          failures = []
+
+          guardrails = json.loads(
+              (pathlib.Path("cdk.out/prod/BdaProdGuardrails.template.json")).read_text()
+          )
+          resource_types = {r["Type"] for r in guardrails["Resources"].values()}
+          if "AWS::Bedrock::GuardrailVersion" not in resource_types:
+              failures.append("the Bedrock guardrail is no longer versioned")
+
+          runtime = json.loads(
+              (pathlib.Path("cdk.out/prod/BdaProdAgentRuntime.template.json")).read_text()
+          )
+          blob = json.dumps(runtime)
+          for forbidden in ("BronzeBucket", "SilverBucket"):
+              if forbidden in blob:
+                  failures.append(f"an agent role references {forbidden}")
+
+          catalog = json.loads(
+              (pathlib.Path("cdk.out/prod/BdaProdCatalog.template.json")).read_text()
+          )
+          workgroups = [
+              r for r in catalog["Resources"].values() if r["Type"] == "AWS::Athena::WorkGroup"
+          ]
+          if not workgroups:
+              failures.append("the Athena workgroup is missing")
+          elif not workgroups[0]["Properties"]["WorkGroupConfiguration"].get(
+              "EnforceWorkGroupConfiguration"
+          ):
+              failures.append("the Athena workgroup no longer enforces its scan ceiling")
+
+          if failures:
+              print("infrastructure invariants broken:", file=sys.stderr)
+              for failure in failures:
+                  print(f"  - {failure}", file=sys.stderr)
+              sys.exit(1)
+          print("infrastructure invariants hold")
+          PY
+      - name: upload templates
+        uses: actions/upload-artifact@v4
+        with:
+          name: cdk-templates
+          path: cdk.out/**/template.json
+          if-no-files-found: error
+          retention-days: 14

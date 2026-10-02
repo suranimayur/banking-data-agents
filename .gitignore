@@ -1,0 +1,33 @@
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+dist/
+build/
+*.egg-info/
+
+# Local data + emulator state
+data/
+.env
+.env.*
+!.env.example
+
+# CDK
+cdk.out/
+.cdk.staging/
+
+# Generated eval reports. The dated ones are artifacts, not source: they churn on
+# every run and their value is in the artifact store.
+evals/reports/*.html
+evals/reports/*.json
+# The baseline is the exception. It is committed deliberately, because the nightly
+# regression check is meaningless without something to regress against.
+!evals/reports/baseline.json
+!evals/reports/.gitkeep
+
+# Streamlit
+.streamlit/secrets.toml

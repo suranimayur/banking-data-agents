@@ -1,0 +1,166 @@
+# Versioned metric definitions for the customer_360 data product.
+#
+# These are the only aggregates an agent may use. The agent selects a metric by
+# name and fills a template; it never invents a formula. When a figure is wrong,
+# the blame is locatable to a specific metric version, which is the property that
+# makes an analytics platform governable.
+product: customer_360
+metrics:
+  - name: customer_count
+    version: 1.0.0
+    owner: customer-insights@bank.example
+    definition: Count of customers in the relationship master, one row per customer.
+    unit: count
+    aggregate: count
+    sql_fragment: COUNT(*)
+    synonyms:
+      - customers
+      - customer count
+      - number of customers
+      - customer base
+      - how many customers
+      - active customers
+
+  - name: account_count
+    version: 1.0.0
+    owner: customer-insights@bank.example
+    definition: Sum of accounts held across the customer base.
+    unit: count
+    aggregate: sum
+    sql_fragment: SUM(account_count)
+    synonyms: [accounts, account count, number of accounts, total accounts]
+
+  - name: total_balance
+    version: 2.1.0
+    owner: customer-insights@bank.example
+    definition: >-
+      Sum of balances across a customer's accounts. Balances that were nulled by
+      remediation are treated as zero, so a customer with a data incident is
+      understated rather than inflated.
+    unit: INR
+    aggregate: sum
+    sql_fragment: SUM(total_balance)
+    synonyms: [balance, total balance, relationship balance, deposits held]
+    caveats:
+      - Remediated accounts contribute zero. Check balance_anomaly_count.
+
+  - name: avg_balance_per_customer
+    version: 1.0.0
+    owner: customer-insights@bank.example
+    definition: >-
+      Average total relationship balance per customer. The product holds one row
+      per customer, so this is the mean of the same column total_balance sums; it
+      exists separately because "the average balance" and "the total balance" are
+      different questions and answering one with the other is a reporting error.
+    unit: INR
+    aggregate: avg
+    sql_fragment: AVG(total_balance)
+    synonyms:
+      - average balance
+      - avg balance
+      - mean balance
+      - average relationship balance
+      - balance per customer
+    caveats:
+      - Remediated accounts contribute zero, which pulls the mean down. Check balance_anomaly_count.
+
+  - name: total_deposits
+    version: 1.3.0
+    owner: customer-insights@bank.example
+    definition: Sum of balances held in FIXED_DEPOSIT accounts.
+    unit: INR
+    aggregate: sum
+    sql_fragment: SUM(total_deposits)
+    synonyms: [deposits, term deposits, fd balance]
+
+  - name: loan_outstanding
+    version: 1.2.0
+    owner: credit-risk@bank.example
+    definition: Sum of outstanding principal across open facilities.
+    unit: INR
+    aggregate: sum
+    sql_fragment: SUM(loan_outstanding)
+    synonyms: [outstanding, loan book, exposure]
+
+  - name: card_spend_90d
+    version: 1.1.0
+    owner: payments-data@bank.example
+    definition: Sum of card-rail debits in the 90 days ending at the as-of date.
+    unit: INR
+    aggregate: sum
+    sql_fragment: SUM(card_spend_90d)
+    synonyms: [card spend, card usage, credit card spend, spending]
+
+  - name: txn_count_90d
+    version: 1.0.0
+    owner: payments-data@bank.example
+    definition: Count of transactions across all rails in the trailing 90 days.
+    unit: count
+    aggregate: sum
+    sql_fragment: SUM(txn_count_90d)
+    synonyms: [transaction count, activity, number of transactions]
+
+  - name: credit_score
+    version: 1.0.0
+    owner: credit-risk@bank.example
+    definition: Latest bureau credit score.
+    unit: score
+    aggregate: avg
+    sql_fragment: AVG(credit_score)
+    synonyms: [bureau score, cibil, score]
+    caveats:
+      - Restricted to risk and portfolio analytics. Marketing targeting on a
+        credit score is prohibited by the product contract.
+
+  - name: customer_segment
+    version: 2.0.0
+    owner: customer-insights@bank.example
+    definition: >-
+      Relationship-value segment: Premium >= 5,000,000 total balance,
+      HNI >= 1,500,000, Affluent >= 300,000, otherwise Mass.
+    unit: category
+    aggregate: count
+    sql_fragment: COUNT(*)
+    synonyms: [segment, customer segment, tier]
+    caveats:
+      - Different from marketing_segment, which is the marketing team's own vocabulary.
+
+  - name: risk_category
+    version: 1.4.0
+    owner: credit-risk@bank.example
+    definition: >-
+      Risk band derived from the bureau score: Low >= 750, Medium 650-749,
+      High < 650, Unknown when no bureau record exists.
+    unit: category
+    aggregate: count
+    sql_fragment: COUNT(*)
+    synonyms: [risk category, risk band, risk grade, credit risk]
+    note: This is the metric "high risk customer" resolves to by default.
+
+  - name: active_accounts
+    version: 1.0.0
+    owner: customer-insights@bank.example
+    definition: Count of accounts whose status is ACTIVE.
+    unit: count
+    aggregate: sum
+    sql_fragment: SUM(active_accounts)
+    synonyms: [active accounts, number of active accounts, active account count]
+
+  - name: high_value_customer
+    version: 1.0.0
+    owner: customer-insights@bank.example
+    definition: >-
+      Count of customers whose total relationship balance is at or above
+      ?threshold. The threshold is a required parameter; there is no default,
+      because "high value" means different things to different teams.
+    unit: count
+    aggregate: count
+    sql_fragment: COUNT(CASE WHEN total_balance >= ?threshold THEN 1 END)
+    parameters:
+      - name: threshold
+        type: decimal
+        required: true
+        description: Balance threshold in INR
+    synonyms: [high value customer, high value, affluent customer, valuable customer]
+    caveats:
+      - Deliberately parameterised. Always confirm the threshold with the user.

@@ -1,0 +1,77 @@
+# Versioned metric definitions for the transaction data product.
+product: transaction
+metrics:
+  - name: txn_count
+    version: 1.2.0
+    owner: payments-data@bank.example
+    definition: Count of transactions.
+    unit: count
+    aggregate: count
+    sql_fragment: COUNT(*)
+    synonyms: [transactions, transaction count, volume]
+
+  - name: txn_amount_sum
+    version: 1.1.0
+    owner: payments-data@bank.example
+    definition: Sum of transaction amounts.
+    unit: mixed
+    aggregate: sum
+    sql_fragment: SUM(amount)
+    synonyms: [transaction value, amount, turnover, throughput]
+    caveats:
+      - >-
+        Card-rail international transactions are recorded in USD. An unfiltered
+        sum mixes currencies. Filter on currency = 'INR' for a single-currency
+        total, or report per currency.
+
+  - name: txn_amount_avg
+    version: 1.0.0
+    owner: payments-data@bank.example
+    definition: Mean transaction amount.
+    unit: mixed
+    aggregate: avg
+    sql_fragment: AVG(amount)
+    synonyms: [average transaction value, ticket size, average spend]
+    caveats:
+      - Same currency-mixing hazard as txn_amount_sum.
+
+  - name: channel_mix
+    version: 1.0.0
+    owner: payments-data@bank.example
+    definition: >-
+      Distribution of transaction count across the conformed channel groups
+      (ATM, BRANCH, TRANSFER, CARD, PAYMENT).
+    unit: count
+    aggregate: count
+    sql_fragment: COUNT(*)
+    synonyms: [channel mix, channel distribution, rail mix]
+    note: Group by channel_group, not the raw channel, to compare across rails.
+
+  - name: international_share
+    version: 1.0.0
+    owner: payments-data@bank.example
+    definition: Share of card transactions processed outside India.
+    unit: ratio
+    aggregate: avg
+    sql_fragment: AVG(CASE WHEN is_international THEN 1.0 ELSE 0.0 END)
+    synonyms: [international transactions, cross border, overseas spend]
+
+  - name: debit_share
+    version: 1.0.0
+    owner: payments-data@bank.example
+    definition: Share of transactions that are debits rather than credits.
+    unit: ratio
+    aggregate: avg
+    sql_fragment: AVG(CASE WHEN debit_credit = 'DEBIT' THEN 1.0 ELSE 0.0 END)
+    synonyms: [debit share, outflow share]
+
+  - name: net_flow
+    version: 1.0.0
+    owner: finance@bank.example
+    definition: Sum of signed amounts (credits positive, debits negative).
+    unit: mixed
+    aggregate: sum
+    sql_fragment: SUM(signed_amount)
+    synonyms: [net flow, net position, inflow outflow, net movement]
+    caveats:
+      - Same currency-mixing hazard as txn_amount_sum.

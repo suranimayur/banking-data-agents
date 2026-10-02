@@ -1,0 +1,88 @@
+name: Deploy prod
+
+# Production is dispatched by a human, reviewed by a GitHub Environment, and deployed
+# from the artifact staging already ran — never rebuilt. The three inputs are the
+# three facts a change record needs: what, which versions, and why.
+#
+# Nothing here is automatic on merge. The success criterion is "dev to prod in under
+# 60 minutes including one human approval and a 15-minute canary watch", and the
+# approval is the part that makes the rest of it reliable rather than fast.
+
+on:
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: "Image tag to promote (the SHA staging verified). Required."
+        required: true
+        type: string
+      live_versions:
+        description: "Versions to pin the live endpoints to, e.g. 'copilot=12,fraud=9'. Required."
+        required: true
+        type: string
+      change_ref:
+        description: "Change ticket reference, recorded in the run summary."
+        required: true
+        type: string
+      canary_minutes:
+        description: "Alarm watch before promotion."
+        required: false
+        type: number
+        default: 15
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  guard:
+    name: guard the promotion
+    runs-on: ubuntu-latest
+    steps:
+      - name: refuse an unpinned promotion
+        # Promoting production without naming the versions means the run is not
+        # reproducible and not rollback-able to a specific point. Better to fail here
+        # than to discover it during an incident.
+        run: |
+          if [ -z "${{ inputs.live_versions }}" ]; then
+            echo "::error::live_versions is required: name the agent runtime versions to pin." >&2
+            exit 1
+          fi
+          if ! echo "${{ inputs.live_versions }}" | grep -Eq '^[a-z_]+=[A-Za-z0-9._-]+(,[a-z_]+=[A-Za-z0-9._-]+)*$'; then
+            echo "::error::live_versions must look like 'copilot=12,fraud=9'." >&2
+            exit 1
+          fi
+          echo "promoting ${{ inputs.image_tag }} with ${{ inputs.live_versions }}"
+
+  deploy:
+    needs: guard
+    # The Environment named here is the one carrying required reviewers, and the one
+    # whose OIDC subject the bootstrap stack trusts for production. Approval here is
+    # not a courtesy: it is the only thing standing between a dispatch and the bank's
+    # production account.
+    uses: ./.github/workflows/deploy.yml
+    with:
+      environment: prod
+      image_tag: ${{ inputs.image_tag }}
+      promote: true
+      live_versions: ${{ inputs.live_versions }}
+      canary_minutes: ${{ inputs.canary_minutes }}
+    secrets: inherit
+
+  record:
+    name: record the change
+    needs: deploy
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - run: |
+          {
+            echo "## Production promotion"
+            echo
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Change reference | \`${{ inputs.change_ref }}\` |"
+            echo "| Image | \`${{ inputs.image_tag }}\` |"
+            echo "| Live pin | \`${{ inputs.live_versions }}\` |"
+            echo "| Result | ${{ needs.deploy.result }} |"
+            echo "| Dispatched by | @${{ github.actor }} |"
+          } >> "$GITHUB_STEP_SUMMARY"

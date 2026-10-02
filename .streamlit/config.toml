@@ -1,0 +1,68 @@
+# Analyst console theme.
+#
+# Deliberately conservative: this is a banking tool, and the palette should read
+# as a system of record rather than a product landing page. A light base because
+# analysts read these screens all day, with a restrained blue accent and semantic
+# colours reserved for status.
+#
+# Styling lives here rather than in injected CSS so it stays declarative and
+# survives Streamlit upgrades.
+
+[theme]
+base = "light"
+primaryColor = "#1D4ED8"
+backgroundColor = "#FFFFFF"
+secondaryBackgroundColor = "#F6F7F9"
+codeBackgroundColor = "#F6F7F9"
+textColor = "#111827"
+linkColor = "#1D4ED8"
+borderColor = "#E2E5EA"
+codeTextColor = "#1F2937"
+
+showWidgetBorder = true
+showSidebarBorder = true
+# Subtle rounding: professional, not playful.
+baseRadius = "6px"
+buttonRadius = "6px"
+
+font = "'Inter':https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap"
+headingFont = "'Inter':https://fonts.googleapis.com/css2?family=Inter:wght@600;700&display=swap"
+codeFont = "'JetBrains Mono':https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&display=swap"
+baseFontSize = 14
+baseFontWeight = 400
+codeFontSize = "13px"
+headingFontSizes = ["28px", "22px", "18px", "16px", "14px", "12px"]
+headingFontWeights = [700, 600, 600, 600, 500, 500]
+linkUnderline = false
+
+# Semantic colours, used for status rather than decoration.
+greenColor = "#047857"
+redColor = "#B91C1C"
+yellowColor = "#B45309"
+orangeColor = "#C2410C"
+blueColor = "#1D4ED8"
+violetColor = "#6D28D9"
+grayColor = "#6B7280"
+
+chartCategoricalColors = [
+    "#1D4ED8",
+    "#047857",
+    "#6D28D9",
+    "#B91C1C",
+    "#B45309",
+    "#0891B2",
+    "#6B7280",
+    "#C2410C",
+]
+
+[theme.sidebar]
+backgroundColor = "#FAFBFC"
+secondaryBackgroundColor = "#F1F3F5"
+codeBackgroundColor = "#F1F3F5"
+borderColor = "#E2E5EA"
+
+[server]
+headless = true
+
+[browser]
+gatherUsageStats = false

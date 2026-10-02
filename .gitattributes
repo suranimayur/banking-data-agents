@@ -1,0 +1,35 @@
+# Normalise line endings in the repository, and check out with LF everywhere.
+#
+# Without this, a Windows checkout commits CRLF, a Linux CI runner then sees the
+# entire repository as modified, and every diff becomes noise. Setting eol=lf
+# keeps the stored and checked-out bytes identical on every platform, which
+# matters because the SQL files, YAML contracts and workflow definitions are all
+# consumed by tools that are sensitive to line endings.
+* text=auto eol=lf
+
+# Shell and Python scripts must never acquire a BOM or CRLF.
+*.sh    text eol=lf
+*.py    text eol=lf
+*.sql   text eol=lf
+*.yml   text eol=lf
+*.yaml  text eol=lf
+
+# Windows-only batch files require CRLF to execute.
+*.bat   text eol=crlf
+*.cmd   text eol=crlf
+
+# Binary assets: never touch them.
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.ico   binary
+*.pdf   binary
+*.parquet binary
+*.duckdb  binary
+*.whl   binary
+
+# Keep lockfiles out of diff statistics and merge conflicts.
+uv.lock   -diff linguist-generated=true
+*.lock    -diff linguist-generated=true
+cdk.out/** linguist-generated=true

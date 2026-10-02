@@ -1,0 +1,131 @@
+name: Rollback
+
+# Rollback is a first-class operation, not an emergency improvisation.
+#
+# The mechanism is the same one promotion uses: the live endpoint is pinned to an
+# agent runtime version, so rolling back is *re-pinning it to the previous version*
+# and re-deploying the previous image. There is no data migration to reverse,
+# because the agents do not own data — they read governed products and write
+# evidence envelopes, and an envelope from a rolled-back version is still a truthful
+# record of what that version answered.
+#
+# The target is always an explicit version chosen by a human. A workflow that
+# decides for itself what "previous" means is a workflow that rolls back to the
+# wrong thing confidently.
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Environment to roll back (staging or prod)."
+        required: true
+        type: choice
+        options: [staging, prod]
+      image_tag:
+        description: "The image tag to restore (a previous git SHA)."
+        required: true
+        type: string
+      live_versions:
+        description: "The versions to re-pin the live endpoints to, e.g. 'copilot=11,fraud=8'."
+        required: true
+        type: string
+      incident_ref:
+        description: "Incident or change reference."
+        required: true
+        type: string
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  rollback:
+    name: roll back ${{ inputs.environment }}
+    runs-on: ubuntu-latest
+    # Same Environment, therefore the same approval rule and the same OIDC subject.
+    # An incident is not a reason to bypass the control that keeps production safe.
+    environment: ${{ inputs.environment }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: assume the deploy role
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE }}
+          aws-region: us-east-1
+          role-session-name: gha-rollback-${{ github.run_id }}
+
+      - name: show what we are reverting
+        run: |
+          {
+            echo "### Rolling back ${{ inputs.environment }}"
+            echo
+            echo "- restoring image \`${{ inputs.image_tag }}\`"
+            echo "- re-pinning live endpoints to \`${{ inputs.live_versions }}\`"
+            echo "- incident: \`${{ inputs.incident_ref }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: re-pin the live endpoints
+        env:
+          BDA_LIVE_AGENT_VERSIONS: ${{ inputs.live_versions }}
+        run: |
+          # The image tag is passed as well as the pin: a runtime version alone does
+          # not roll back a change that landed in the API or the pipeline image, and a
+          # rollback that only covers half the system is a rollback that does not
+          # restore service.
+          uv run --group infra bda infra deploy \
+            --env ${{ inputs.environment }} \
+            --image-tag ${{ inputs.image_tag }} \
+            --yes
+
+      - name: verify the rollback
+        env:
+          BDA_SMOKE_ENV: ${{ inputs.environment }}
+          BDA_SMOKE_IMAGE_TAG: ${{ inputs.image_tag }}
+        run: uv run --group dev pytest -m smoke
+
+      - name: confirm the alarms have cleared
+        run: |
+          python - <<'PY'
+          import json, subprocess, sys
+
+          # The rollback is not finished when the deploy returns; it is finished when
+          # the alarms stop firing. Reporting success before that is how a rollback is
+          # declared done while the incident continues.
+          listing = subprocess.run(
+              [
+                  "aws", "cloudwatch", "describe-alarms",
+                  "--query", "MetricAlarms[?StateValue=='ALARM'].AlarmName",
+                  "--output", "json",
+              ],
+              capture_output=True, text=True, check=True,
+          )
+          firing = [n for n in json.loads(listing.stdout or "[]")
+                    if n.startswith("bda-${{ inputs.environment }}-")]
+          if firing:
+              print("alarms still firing after the rollback:", file=sys.stderr)
+              for name in firing:
+                  print(f"  - {name}", file=sys.stderr)
+              print("Note: CloudWatch alarms need consecutive datapoints to clear; "
+                    "re-run this check in a few minutes before escalating.",
+                    file=sys.stderr)
+              sys.exit(1)
+          print("alarms cleared")
+          PY
+
+      - name: summarise
+        if: always()
+        run: |
+          {
+            echo
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Image restored | \`${{ inputs.image_tag }}\` |"
+            echo "| Live pin | \`${{ inputs.live_versions }}\` |"
+            echo "| Incident | \`${{ inputs.incident_ref }}\` |"
+            echo "| Result | ${{ job.status }} |"
+          } >> "$GITHUB_STEP_SUMMARY"

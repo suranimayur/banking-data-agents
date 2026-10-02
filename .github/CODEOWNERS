@@ -1,0 +1,39 @@
+# Code owners.
+#
+# The point is not that these files are hard to change — it is that they are hard to
+# change *without a second person looking*. Each path below is one where a quiet edit
+# changes what the platform is allowed to answer or what it costs to run.
+
+# The default owner for anything not named below.
+* @your-org/data-platform
+
+# Data contracts are the platform's constitution: a change here changes what an agent
+# may do, and it must be reviewed by whoever owns the product.
+/contracts/ @your-org/data-governance @your-org/data-platform
+
+# The semantic layer decides which definition of "revenue" wins. Metric fragments
+# become SQL that goes to a regulator.
+/semantic/ @your-org/data-governance @your-org/analytics
+
+# Infrastructure: a change here can widen an IAM policy or delete a lake. The
+# permissions boundary limits the damage architecturally; this limits it socially.
+/infra/ @your-org/platform-security @your-org/data-platform
+
+# The bootstrap stack creates the deploy roles and the boundary itself. Changes
+# require a security review, because a mistake here is not contained by anything.
+/infra/bootstrap/ @your-org/platform-security
+
+# Agent prompts and tools: these decide refusals and tool access, and they are code.
+/src/banking_data_agents/agents/ @your-org/ai-governance @your-org/data-platform
+/src/banking_data_agents/tools/ @your-org/ai-governance
+
+# The evaluation harness is the thing that proves everything above still works, so it
+# cannot be weakened in the same pull request that weakens an agent.
+/src/banking_data_agents/evals/ @your-org/ai-governance @your-org/data-platform
+
+# CI/CD: whoever can change a workflow can deploy.
+/.github/workflows/ @your-org/platform-security @your-org/data-platform
+
+# The container image is the artifact that ships, including its user and its
+# filesystem permissions.
+/Dockerfile @your-org/platform-security

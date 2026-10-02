@@ -1,0 +1,120 @@
+name: Drift
+
+# Environments are identical in shape, and drift is detected rather than tolerated.
+#
+# `cdk diff` against a deployed environment answers a question no other check can:
+# has anyone changed anything outside the pipeline? The usual answers are a console
+# hotfix during an incident, a security team's policy edit, or a resource someone
+# deleted by hand. All three are worth knowing about *before* the next deploy
+# silently reverts or fails on them.
+
+on:
+  schedule:
+    - cron: "0 6 * * *" # daily, 06:00 UTC
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+  issues: write
+
+env:
+  UV_FROZEN: "1"
+  AWS_REGION: us-east-1
+
+jobs:
+  diff:
+    name: cdk diff
+    runs-on: ubuntu-latest
+    strategy:
+      # All three, every time. One environment failing to authenticate must not hide
+      # drift in the others, and a drift check that can be pointed at only the
+      # environment you already trust is a drift check that reports what you expect.
+      fail-fast: false
+      matrix:
+        environment: [dev, staging, prod]
+    environment: ${{ matrix.environment }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: assume the deploy role
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE }}
+          aws-region: ${{ env.AWS_REGION }}
+          role-session-name: gha-drift-${{ matrix.environment }}
+
+      - name: diff the deployed stack set against the repository
+        id: diff
+        run: |
+          set +e
+          uv run --group infra bda infra synth --env ${{ matrix.environment }} > /dev/null
+          cdk diff --all \
+            --app "python -m infra.app -c stage=${{ matrix.environment }}" \
+            --context imageTag=latest \
+            > drift-${{ matrix.environment }}.txt 2>&1
+          status=$?
+          set -e
+
+          # cdk diff exits 0 whether or not there is a difference, so the *content*
+          # is what decides. An empty diff prints nothing but the summary line.
+          if grep -qE '^\s*(Resources|\[~|\[-|\[\+\])' drift-${{ matrix.environment }}.txt; then
+            echo "drift=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "drift=false" >> "$GITHUB_OUTPUT"
+          fi
+          echo "cdk diff exit status: ${status}"
+          cat drift-${{ matrix.environment }}.txt
+
+      - name: open an issue when drift is found
+        if: steps.diff.outputs.drift == 'true'
+        uses: actions/github-script@v7
+        env:
+          ENV: ${{ matrix.environment }}
+        with:
+          script: |
+            const fs = require('fs');
+            const env = process.env.ENV;
+            const diff = fs.readFileSync(`drift-${env}.txt`, 'utf8').slice(0, 60000);
+            const title = `Infrastructure drift detected in ${env}`;
+
+            const existing = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              labels: 'drift',
+            });
+            if (existing.data.some((issue) => issue.title === title)) {
+              core.info('an issue for this drift is already open');
+              return;
+            }
+
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title,
+              labels: ['drift', 'infrastructure'],
+              body: [
+                `\`cdk diff\` found differences between the repository and the deployed \`${env}\` environment.`,
+                '',
+                'Either someone changed something by hand, or the repository is behind what is deployed.',
+                'Decide which, then either commit the change or let the next deploy revert it — do not leave',
+                'it in between, where the next deploy becomes a surprise.',
+                '',
+                '```diff',
+                diff,
+                '```',
+              ].join('\n'),
+            });
+
+      - name: upload the diff
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: drift-${{ matrix.environment }}
+          path: drift-${{ matrix.environment }}.txt
+          if-no-files-found: warn
+          retention-days: 30

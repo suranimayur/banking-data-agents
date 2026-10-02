@@ -1,0 +1,14 @@
+{
+  "app": "python -m infra.app",
+  "watch": {
+    "include": ["infra/**", "src/banking_data_agents/**", "contracts/**", "semantic/**"],
+    "exclude": ["data/**", "cdk.out/**", ".venv/**", "**/__pycache__/**"]
+  },
+  "context": {
+    "stage": "dev",
+    "imageTag": "latest"
+  },
+  "notices": false,
+  "versionReporting": false,
+  "output": "cdk.out"
+}

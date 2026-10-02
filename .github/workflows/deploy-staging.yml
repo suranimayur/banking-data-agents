@@ -1,0 +1,63 @@
+name: Deploy staging
+
+# Runs after dev has deployed successfully, and deploys **the artifact dev tested**
+# rather than a rebuild. That is the whole point of the workflow: staging is where
+# the release is verified, and verifying a different binary than the one that will
+# reach production verifies nothing.
+#
+# Keyed on the commit SHA, which the dev run puts in its own tag, so the two
+# environments are provably running the same code.
+
+on:
+  workflow_run:
+    workflows: ["Deploy dev"]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: "Image tag to deploy (defaults to the latest dev deployment)"
+        required: false
+        type: string
+
+permissions:
+  id-token: write
+  contents: read
+  actions: read
+
+jobs:
+  resolve-tag:
+    name: resolve the artifact
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    outputs:
+      image_tag: ${{ steps.tag.outputs.image_tag }}
+    steps:
+      - id: tag
+        run: |
+          # The dev deploy tags its images with the commit SHA, so the SHA *is* the
+          # artifact identifier. Dispatch input wins when a human is promoting a
+          # specific build.
+          if [ -n "${{ inputs.image_tag }}" ]; then
+            TAG="${{ inputs.image_tag }}"
+          else
+            TAG="${{ github.event.workflow_run.head_sha }}"
+          fi
+          if [ -z "${TAG}" ] || [ "${TAG}" = "null" ]; then
+            echo "::error::could not determine an image tag to promote" >&2
+            exit 1
+          fi
+          echo "image_tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "promoting ${TAG} to staging"
+
+  deploy:
+    needs: resolve-tag
+    uses: ./.github/workflows/deploy.yml
+    with:
+      environment: staging
+      image_tag: ${{ needs.resolve-tag.outputs.image_tag }}
+      # Staging promotes its own traffic: it is the rehearsal for the production
+      # promotion path, and a path that is only ever exercised in production is not
+      # rehearsed.
+      promote: true
+      canary_minutes: 5
+    secrets: inherit

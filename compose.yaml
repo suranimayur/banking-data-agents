@@ -1,0 +1,29 @@
+# Floci — local AWS emulator. Drop-in LocalStack replacement, MIT licensed.
+# Starts in ~24ms, ~13 MiB idle, 119 AWS services on port 4566.
+#
+#   docker compose up -d
+#   eval "$(floci env)"      # or rely on the exported vars in .env.example
+#
+# Services used by BDA: S3, DynamoDB, Glue, Athena (DuckDB sidecar),
+# Lake Formation, Step Functions, Lambda, Kinesis, EventBridge, Cognito,
+# KMS, Secrets Manager, CloudWatch Logs/Metrics, Bedrock, Bedrock AgentCore.
+services:
+  floci:
+    image: floci/floci:latest
+    container_name: bda-floci
+    ports:
+      - "4566:4566"
+    volumes:
+      # Needed so Lambda / Athena-DuckDB / OpenSearch sidecars can be launched.
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./data/floci:/app/data
+    environment:
+      # Persist emulator state between restarts so `make pipeline` is incremental.
+      FLOCI_STORAGE_MODE: hybrid
+      # Web console at http://localhost:4566/_floci/ui
+      FLOCI_SERVICES_UI_ENABLED: "true"
+      FLOCI_SERVICES_UI_PORT: "4500"
+      FLOCI_SERVICES_UI_BIND_ADDRESS: "127.0.0.1"
+    # Readiness is polled over HTTP by banking_data_agents.floci.wait_until_ready() rather
+    # than a container healthcheck, so it works regardless of the tools present
+    # inside the image.

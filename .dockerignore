@@ -1,0 +1,41 @@
+# Keep the build context to the things the image actually needs. A small context is
+# faster to send, and — more importantly — a context that cannot contain .env or
+# data/ cannot leak them into a layer.
+
+# Local state and secrets
+.env
+.env.*
+!.env.example
+data/
+cdk.out/
+*.pem
+*.key
+
+# Version control and tooling caches
+.git
+.gitignore
+.github
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Development-only code: the tests, the infrastructure and the docs are not part of
+# the runtime artifact, and the CDK code in particular is excluded from the wheel
+# for the same reason.
+tests/
+docs/
+infra/
+conftest.py
+Makefile
+compose.yaml
+cdk.json
+Dockerfile
+.dockerignore
+
+# Python bytecode and virtualenvs
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/

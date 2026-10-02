@@ -1,0 +1,83 @@
+# Versioned metric definitions for the credit_risk data product.
+product: credit_risk
+metrics:
+  - name: dti
+    version: 1.2.0
+    owner: credit-risk@bank.example
+    definition: Existing monthly obligations divided by verified monthly income.
+    unit: ratio
+    aggregate: avg
+    sql_fragment: AVG(dti)
+    synonyms: [debt to income, dti, debt ratio, affordability]
+    caveats:
+      - Baseline only. It excludes any proposed new facility; underwriting adds the proposed EMI.
+
+  - name: obligation_monthly
+    version: 1.1.0
+    owner: credit-risk@bank.example
+    definition: Sum of EMI amounts across a customer's open facilities.
+    unit: INR
+    aggregate: sum
+    sql_fragment: SUM(obligation_monthly)
+    synonyms: [monthly obligations, emi, debt servicing]
+
+  - name: total_outstanding
+    version: 1.0.0
+    owner: credit-risk@bank.example
+    definition: Sum of outstanding principal across a customer's open facilities.
+    unit: INR
+    aggregate: sum
+    sql_fragment: SUM(total_outstanding)
+    synonyms: [outstanding, exposure, loan book]
+
+  - name: dpd_max_12m
+    version: 1.1.0
+    owner: credit-risk@bank.example
+    definition: Worst days-past-due observed across the full stored history.
+    unit: days
+    aggregate: max
+    sql_fragment: MAX(dpd_max_12m)
+    synonyms: [dpd, delinquency, days past due, arrears]
+
+  - name: risk_score
+    version: 1.0.0
+    owner: credit-risk@bank.example
+    definition: >-
+      Explainable triage score from the published scorecard, higher is riskier.
+      Not a calibrated probability of default.
+    unit: score
+    aggregate: avg
+    sql_fragment: AVG(risk_score)
+    synonyms: [risk score, credit risk score]
+    caveats:
+      - Not a probability of default. A production PD model would be governed
+        separately under model risk policy.
+
+  - name: risk_band
+    version: 1.0.0
+    owner: credit-risk@bank.example
+    definition: Banded risk_score (LOW, MEDIUM, HIGH, VERY_HIGH).
+    unit: category
+    aggregate: count
+    sql_fragment: COUNT(*)
+    synonyms: [risk band, risk grade, credit grade]
+
+  - name: default_rate
+    version: 1.0.0
+    owner: credit-risk@bank.example
+    definition: Share of customers with a 90+ days-past-due event in history.
+    unit: ratio
+    aggregate: avg
+    sql_fragment: AVG(CASE WHEN default_history_flag THEN 1.0 ELSE 0.0 END)
+    synonyms: [default rate, npa rate, delinquency rate, bad rate]
+
+  - name: collateral_coverage
+    version: 1.0.0
+    owner: credit-risk@bank.example
+    definition: Collateral value divided by outstanding principal.
+    unit: ratio
+    aggregate: avg
+    sql_fragment: AVG(collateral_coverage_ratio)
+    synonyms: [collateral coverage, ltv, security cover]
+    caveats:
+      - Null when there is no outstanding. Do not treat a null as zero coverage.

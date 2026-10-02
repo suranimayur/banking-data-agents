@@ -1,0 +1,234 @@
+name: Deploy (reusable)
+
+# The one workflow that touches AWS. It is a `workflow_call` so that dev, staging and
+# prod differ only in their inputs — the same steps, the same image, the same
+# template — which is what makes "environments are identical in shape" true rather
+# than aspirational.
+#
+# The order is deliberate, and each step is a gate on the next:
+#
+#   1. credentials via OIDC (no long-lived keys anywhere)
+#   2. build the image once, tagged with the commit SHA, and never rebuild it
+#   3. deploy the infrastructure with that tag
+#   4. smoke test the deployed environment
+#   5. run the eval suite
+#   6. watch the alarms, then promote by pinning the `live` endpoint
+#
+# Promotion is the last step and it is a *configuration* change: the live endpoint is
+# pinned to the version the canary served, and the canary endpoint stays free to move
+# on the next deploy. That ordering means a failed deploy leaves production traffic
+# exactly where it was, and a rollback is re-pinning to the previous version rather
+# than a special mechanism that only works when someone remembers it.
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: "Target environment (dev, staging, prod)"
+        required: true
+        type: string
+      image_tag:
+        description: "Immutable image tag to deploy. Empty builds one from this commit."
+        required: false
+        type: string
+        default: ""
+      promote:
+        description: "Pin the live endpoint after the canary window passes"
+        required: false
+        type: boolean
+        default: false
+      live_versions:
+        description: "Versions to pin the live endpoints to, e.g. 'copilot=12,fraud=9'"
+        required: false
+        type: string
+        default: ""
+      canary_minutes:
+        description: "How long to watch the alarms before promoting"
+        required: false
+        type: number
+        default: 15
+    outputs:
+      image_tag:
+        description: "The image tag that was deployed"
+        value: ${{ jobs.deploy.outputs.image_tag }}
+
+permissions:
+  id-token: write # required for OIDC
+  contents: read
+
+env:
+  UV_FROZEN: "1"
+  PYTHONIOENCODING: utf-8
+  AWS_REGION: us-east-1
+
+jobs:
+  deploy:
+    name: deploy ${{ inputs.environment }}
+    runs-on: ubuntu-latest
+    # The GitHub Environment carries both the approval rule and the OIDC subject the
+    # bootstrap stack trusts. Environment and credential are the same decision.
+    environment: ${{ inputs.environment }}
+    outputs:
+      image_tag: ${{ steps.tag.outputs.image_tag }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: assume the deploy role
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          # The only credential in the repository is this ARN, which is useless
+          # without a GitHub-issued OIDC token from the right environment.
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE }}
+          aws-region: ${{ env.AWS_REGION }}
+          role-session-name: gha-${{ inputs.environment }}-${{ github.run_id }}
+
+      - name: confirm which identity we actually got
+        # Printed, not trusted. A deploy that runs as the wrong principal writes to
+        # the wrong account, and it is worth one line to see it.
+        run: aws sts get-caller-identity
+
+      - name: resolve the image tag
+        id: tag
+        run: |
+          if [ -n "${{ inputs.image_tag }}" ]; then
+            # Promotion: the artifact was built and tested once, elsewhere.
+            TAG="${{ inputs.image_tag }}"
+          else
+            TAG="${GITHUB_SHA}"
+          fi
+          echo "image_tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "deploying image ${TAG} to ${{ inputs.environment }}"
+
+      - name: log in to ECR
+        id: ecr
+        run: |
+          ACCOUNT=$(aws sts get-caller-identity --query Account --output text)
+          REGISTRY="${ACCOUNT}.dkr.ecr.${AWS_REGION}.amazonaws.com"
+          echo "registry=${REGISTRY}" >> "$GITHUB_OUTPUT"
+          aws ecr get-login-password --region "$AWS_REGION" \
+            | docker login --username AWS --password-stdin "$REGISTRY"
+
+      - name: build and push the images
+        # Skipped on promotion: rebuilding on the way to production is how the
+        # artifact you tested stops being the artifact you deploy.
+        if: inputs.image_tag == ''
+        run: |
+          REGISTRY="${{ steps.ecr.outputs.registry }}"
+          TAG="${{ steps.tag.outputs.image_tag }}"
+          ENV="${{ inputs.environment }}"
+          for repository in agent-copilot agent-fraud agent-credit pipeline api console; do
+            image="${REGISTRY}/bda-${ENV}-${repository}:${TAG}"
+            docker build \
+              --build-arg BDA_VERSION="${TAG}" \
+              --tag "${image}" \
+              --file Dockerfile .
+            docker push "${image}"
+          done
+
+      - name: scan the image before deploying it
+        if: inputs.image_tag == ''
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          # HIGH and CRITICAL fail the build; anything lower is reported and triaged.
+          image-ref: ${{ steps.ecr.outputs.registry }}/bda-${{ inputs.environment }}-api:${{ steps.tag.outputs.image_tag }}
+          format: table
+          severity: HIGH,CRITICAL
+          exit-code: "1"
+
+      - name: deploy the infrastructure
+        # `bda infra deploy` runs `cdk deploy --all` with the stage context, so the
+        # same command deploys every stack in dependency order with no hand-typed
+        # resource names.
+        run: |
+          uv run --group infra bda infra deploy \
+            --env ${{ inputs.environment }} \
+            --image-tag ${{ steps.tag.outputs.image_tag }} \
+            --yes
+
+      - name: smoke test the deployed environment
+        # Reads the CDK outputs the deploy just wrote, so it tests the resources that
+        # were created rather than a hard-coded name that drifted three releases ago.
+        env:
+          BDA_SMOKE_ENV: ${{ inputs.environment }}
+          BDA_SMOKE_IMAGE_TAG: ${{ steps.tag.outputs.image_tag }}
+        run: uv run --group dev pytest -m smoke
+
+      - name: run the eval gate
+        # The same suite as CI, run again here because "the code passes" and "the
+        # deployment answers correctly" are different claims.
+        run: uv run bda eval --suite deterministic --fail-under 0.97 --no-report
+
+      - name: check for alarms before promoting
+        if: inputs.promote
+        run: |
+          python - <<'PY'
+          import json, os, subprocess, sys, time
+
+          environment = "${{ inputs.environment }}"
+          minutes = int("${{ inputs.canary_minutes }}")
+          print(f"watching alarms for {minutes} minute(s) before promoting ...")
+          time.sleep(minutes * 60)
+
+          # Scoped to this environment's alarms, which are all named bda-<env>-*.
+          # A prod alarm firing during a prod deploy must not be masked by a dev
+          # alarm that nobody has looked at in a week.
+          listing = subprocess.run(
+              [
+                  "aws", "cloudwatch", "describe-alarms",
+                  "--query", "MetricAlarms[?StateValue=='ALARM'].AlarmName",
+                  "--output", "json",
+              ],
+              capture_output=True, text=True, check=True,
+          )
+          firing = [name for name in json.loads(listing.stdout or "[]")
+                    if name.startswith(f"bda-{environment}-")]
+          if firing:
+              print("alarms firing during the canary window:", file=sys.stderr)
+              for name in firing:
+                  print(f"  - {name}", file=sys.stderr)
+              print("\nrefusing to promote. Roll back or fix forward, then re-run.", file=sys.stderr)
+              sys.exit(1)
+          print("no alarms firing; clear to promote")
+          PY
+
+      - name: promote
+        if: inputs.promote
+        env:
+          BDA_LIVE_AGENT_VERSIONS: ${{ inputs.live_versions }}
+        run: |
+          if [ -z "${BDA_LIVE_AGENT_VERSIONS}" ]; then
+            # Environments that do not pin their live endpoint follow whatever was
+            # deployed, so there is nothing to switch: for them the promotion gate is
+            # the alarm check above, and running it is the rehearsal for the
+            # environments that do pin. Saying so out loud, because "promoted"
+            # meaning two different things is how a rollback procedure surprises
+            # someone at 3am.
+            echo "no live pin configured for ${{ inputs.environment }}: the live endpoint"
+            echo "follows the newest deployed version, and the alarm window is the gate."
+            exit 0
+          fi
+          echo "pinning live endpoints: ${BDA_LIVE_AGENT_VERSIONS}"
+          uv run --group infra bda infra deploy \
+            --env ${{ inputs.environment }} \
+            --image-tag ${{ steps.tag.outputs.image_tag }} \
+            --yes
+          echo "promoted. To roll back, run rollback.yml with the previous versions."
+
+      - name: summarise
+        if: always()
+        run: |
+          {
+            echo "## Deploy: ${{ inputs.environment }}"
+            echo
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Image tag | \`${{ steps.tag.outputs.image_tag }}\` |"
+            echo "| Commit | \`${GITHUB_SHA}\` |"
+            echo "| Promoted | ${{ inputs.promote }} |"
+            echo "| Live pin | \`${{ inputs.live_versions }}\` |"
+            echo "| Alarm watch | ${{ inputs.canary_minutes }} min |"
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -1,0 +1,190 @@
+product: customer_360
+version: 2.3.0
+domain: customer
+owner: customer-insights@bank.example
+steward: data-steward@bank.example
+description: >-
+  One trusted row per customer, assembled from CRM, core banking, loans, cards and
+  the credit bureau. The product that ends the "which number is right" argument:
+  segment and risk definitions are fixed here rather than recomputed differently by
+  every consumer.
+grain: one row per customer
+primary_key: [customer_id]
+classification: confidential
+refresh:
+  schedule: "0 */6 * * *"
+  job: pipeline:gold.customer_360
+sla:
+  freshness_hours: 6
+  availability: "99.5% monthly"
+  row_count_floor: 100
+
+# Governance that is enforced, not documented and forgotten. The Copilot must
+# refuse a request whose intended use is on `not_allowed_use` and cite this file.
+allowed_use:
+  - portfolio_analytics
+  - customer_segmentation
+  - cross_sell_analytics
+  - retention_analytics
+  - risk_analytics
+not_allowed_use:
+  - marketing_targeting_on_credit_score
+  - automated_credit_decision
+  - employment_screening
+
+columns:
+  - name: customer_id
+    type: string
+    description: Tokenized, stable customer identifier
+    pii: true
+
+  - name: customer_type
+    type: string
+    description: Derived from whether the customer holds a business facility
+    enum: [Individual, Business]
+
+  - name: age
+    type: integer
+    description: Age in whole years at the product's as-of date
+    pii: true
+    not_allowed_use: [marketing_targeting_on_age]
+
+  - name: age_group
+    type: string
+    description: Banded age. Raw date of birth never reaches this layer.
+    enum: ["18-25", "26-35", "36-45", "46-55", "56-65", "65+"]
+
+  - name: region
+    type: string
+    description: Customer's residential state, owned by the CRM
+  - name: city
+    type: string
+  - name: state_code
+    type: string
+
+  - name: marketing_segment
+    type: string
+    description: >-
+      The marketing team's own segment vocabulary. Deliberately NOT the same as
+      customer_segment so that the two cannot be confused.
+    enum: [Retail, Preferred, Prime, Wealth]
+
+  - name: kyc_status
+    type: string
+    enum: [VERIFIED, PENDING, RE_KYC_DUE, DOCS_PENDING]
+
+  - name: preferred_channel
+    type: string
+    enum: [MOBILE_APP, INTERNET_BANKING, BRANCH, ATM]
+
+  - name: account_count
+    type: integer
+    description: All accounts, any status
+  - name: active_accounts
+    type: integer
+    description: Accounts whose status is ACTIVE
+    definition: COUNT of accounts with status = 'ACTIVE'
+
+  - name: total_balance
+    type: decimal(18,2)
+    unit: INR
+    definition: Sum of balances across the customer's accounts, with remediated balances treated as zero
+    metric_ref: metric.total_balance@2.1.0
+
+  - name: total_deposits
+    type: decimal(18,2)
+    unit: INR
+    definition: Sum of balances held in FIXED_DEPOSIT accounts
+    metric_ref: metric.total_deposits@1.3.0
+
+  - name: total_overdraft_limit
+    type: decimal(18,2)
+    unit: INR
+
+  - name: loan_count
+    type: integer
+    description: Open facilities only
+
+  - name: loan_outstanding
+    type: decimal(18,2)
+    unit: INR
+    definition: Sum of outstanding principal across open facilities
+    metric_ref: metric.loan_outstanding@1.2.0
+
+  - name: total_loan_amount
+    type: decimal(18,2)
+    unit: INR
+    description: Original sanctioned principal across open facilities
+
+  - name: npa_count
+    type: integer
+    description: Facilities 90+ days past due
+    definition: COUNT of loans where dpd >= 90
+
+  - name: card_spend_90d
+    type: decimal(18,2)
+    unit: INR
+    definition: Sum of card-rail debits in the 90 days ending at the as-of date
+    metric_ref: metric.card_spend_90d@1.1.0
+
+  - name: txn_count_90d
+    type: integer
+    definition: Count of transactions across all rails in the 90 days ending at the as-of date
+
+  - name: last_transaction_at
+    type: timestamp
+    description: Most recent transaction on any rail. Null for a customer with no activity.
+
+  - name: credit_score
+    type: integer
+    range: [300, 900]
+    source: s_bureau
+    description: Latest bureau score. Flows through from the credit_risk product lineage.
+    metric_ref: metric.credit_score@1.0.0
+    allowed_use: [risk_analytics, portfolio_analytics, credit_assessment]
+    not_allowed_use: [marketing_targeting_on_credit_score]
+
+  - name: score_band
+    type: string
+    enum: [EXCELLENT, GOOD, FAIR, POOR, VERY_POOR]
+
+  - name: customer_segment
+    type: string
+    enum: [Mass, Affluent, HNI, Premium]
+    definition: >-
+      Derived from total relationship balance: Premium >= 5,000,000;
+      HNI >= 1,500,000; Affluent >= 300,000; otherwise Mass.
+    metric_ref: metric.customer_segment@2.0.0
+
+  - name: risk_category
+    type: string
+    enum: [Low, Medium, High, Unknown]
+    definition: >-
+      Derived from the bureau score: Low >= 750; Medium 650-749; High < 650;
+      Unknown when no bureau record exists.
+    metric_ref: metric.risk_category@1.4.0
+
+  - name: balance_anomaly_count
+    type: integer
+    description: >-
+      Accounts whose conformed balance was nulled by remediation because the
+      upstream value was impossible. Non-zero means this row is partly remediated.
+  - name: region_conflict_count
+    type: integer
+    description: >-
+      Accounts whose branch region disagrees with the customer's residential
+      region. Both values are preserved in silver; this counts the disagreement.
+
+  - name: valid_from_batch
+    type: string
+    description: Batch from which this customer's current attributes are valid
+
+  - name: _gold_updated_at
+    type: timestamp
+    description: Pipeline anchor timestamp
+
+consumers:
+  - data-product-copilot
+  - credit-risk-underwriting
+  - bi_dashboards
+  - ml_feature_pipeline

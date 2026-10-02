@@ -1,0 +1,71 @@
+# Weekly dependency updates, which are still eval-gated.
+#
+# An update to a model SDK can change how a tool call is serialised, and an update to
+# a data library can change a rounded number. Both would be caught by the eval gate on
+# the pull request, which is why these arrive as pull requests rather than as
+# automatic merges.
+
+version: 2
+updates:
+  # Python dependencies, from pyproject.toml and uv.lock.
+  - package-ecosystem: uv
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "07:00"
+      timezone: UTC
+    open-pull-requests-limit: 5
+    groups:
+      # Grouped by purpose so that a model-SDK bump arrives as one reviewable change
+      # rather than five that each need a rebase.
+      agent-framework:
+        patterns:
+          - "strands-agents*"
+          - "boto3"
+          - "botocore"
+      data-stack:
+        patterns:
+          - "polars"
+          - "duckdb"
+          - "pyarrow"
+          - "sqlglot"
+      web:
+        patterns:
+          - "fastapi"
+          - "uvicorn"
+          - "streamlit"
+          - "httpx"
+    labels:
+      - dependencies
+    commit-message:
+      prefix: "chore(deps)"
+
+  # GitHub Actions: a compromised action is a compromised pipeline, and the only
+  # defence is keeping up with the ones that are pinned by tag.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - ci
+    commit-message:
+      prefix: "chore(ci)"
+
+  # The base image. Not grouped with anything: a base-image change is a change to
+  # every layer of the artifact, and it deserves its own pull request and its own
+  # image scan.
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 3
+    labels:
+      - dependencies
+      - security
+    commit-message:
+      prefix: "chore(image)"

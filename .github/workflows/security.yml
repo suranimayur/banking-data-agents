@@ -1,0 +1,112 @@
+name: Security
+
+# Four cheap checks that each catch a different class of mistake:
+#
+#   gitleaks    a credential committed by accident (the one that ends careers)
+#   pip-audit   a dependency with a published CVE
+#   checkov     an infrastructure template that is insecure by construction
+#   trivy       a base image layer with a known vulnerability
+#
+# HIGH and CRITICAL findings block. Anything lower is reported, because a workflow
+# that fails on a low-severity advisory in an unused transitive dependency is a
+# workflow that gets marked as flaky and then disabled.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "0 3 * * 1" # Mondays, 03:00 UTC: a new CVE in an old dependency
+
+permissions:
+  contents: read
+  security-events: write
+
+env:
+  UV_FROZEN: "1"
+
+jobs:
+  secrets:
+    name: secret scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # gitleaks needs the history to see whether a secret was ever committed,
+          # not only whether it is in the working tree today.
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  dependencies:
+    name: dependency audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - name: export the locked dependency set
+        run: uv export --frozen --no-dev --format requirements-txt > requirements-audit.txt
+      - name: pip-audit
+        run: |
+          uv run --with pip-audit pip-audit \
+            --requirement requirements-audit.txt \
+            --strict \
+            --desc
+
+  infrastructure:
+    name: IaC scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - name: synthesise
+        run: uv run --group infra bda infra synth --env prod
+      - name: checkov
+        uses: bridgecrewio/checkov-action@v12
+        with:
+          directory: cdk.out/prod
+          framework: cloudformation
+          # The checks that matter for this repository: encryption, public access,
+          # and IAM wildcards. Raising this to the full set is a follow-up, and the
+          # follow-up is tracked rather than pretended away.
+          check: CKV_AWS_19,CKV_AWS_20,CKV_AWS_21,CKV_AWS_23,CKV_AWS_24,CKV_AWS_26,CKV_AWS_28,CKV_AWS_33,CKV_AWS_35,CKV_AWS_41,CKV_AWS_57,CKV_AWS_119
+          soft_fail: false
+          output_format: cli
+
+  image:
+    name: image scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: build the image
+        run: docker build --tag bda:scan --file Dockerfile .
+      - name: trivy
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: bda:scan
+          format: table
+          severity: HIGH,CRITICAL
+          exit-code: "1"
+          ignore-unfixed: true
+
+  policies:
+    name: security policy tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - name: prepare a lake
+        run: |
+          uv run bda data generate
+          uv run bda pipeline run
+      # The application's own guardrails are security controls, so they get tests of
+      # their own rather than being trusted because they are written in Python.
+      - name: guardrail and refusal tests
+        run: uv run pytest tests/unit/test_sqlguard.py tests/unit/test_evals.py tests/unit/test_agents.py -q

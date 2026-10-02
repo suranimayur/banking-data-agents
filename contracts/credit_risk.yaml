@@ -1,0 +1,145 @@
+product: credit_risk
+version: 2.1.0
+domain: risk
+owner: credit-risk@bank.example
+steward: data-steward@bank.example
+description: >-
+  Affordability, delinquency and collateral traits plus a transparent risk
+  scorecard, one row per customer as of the pipeline anchor date. Consumed by the
+  underwriting agent, the credit team and portfolio reporting.
+grain: one row per customer per as-of date
+primary_key: [customer_id, as_of_date]
+classification: restricted
+refresh:
+  schedule: "daily 02:00"
+  job: pipeline:gold.credit_risk
+sla:
+  freshness_hours: 24
+  availability: "99.5% monthly"
+  row_count_floor: 100
+
+allowed_use:
+  - credit_assessment
+  - portfolio_risk_analytics
+  - regulatory_reporting
+  - collections_prioritisation
+not_allowed_use:
+  - marketing_targeting
+  - automated_credit_decision
+  - customer_facing_scoring
+
+columns:
+  - name: customer_id
+    type: string
+    pii: true
+
+  - name: as_of_date
+    type: date
+    description: The date the traits are valid for. Part of the primary key so history can accumulate.
+
+  - name: region
+    type: string
+
+  - name: credit_score
+    type: integer
+    range: [300, 900]
+    source: s_bureau
+    metric_ref: metric.credit_score@1.0.0
+
+  - name: score_band
+    type: string
+    enum: [EXCELLENT, GOOD, FAIR, POOR, VERY_POOR]
+
+  - name: income_monthly
+    type: decimal(18,2)
+    unit: INR
+    definition: Declared annual income at KYC divided by 12
+    caveat: Declared, not verified. Treat as a self-reported figure.
+
+  - name: obligation_monthly
+    type: decimal(18,2)
+    unit: INR
+    definition: Sum of EMI amounts across open facilities
+    metric_ref: metric.obligation_monthly@1.1.0
+
+  - name: dti
+    type: decimal(6,4)
+    range: [0, 5]
+    definition: obligation_monthly / income_monthly for existing facilities
+    metric_ref: metric.dti@1.2.0
+    caveat: Baseline only — it excludes any proposed new facility. Underwriting adds the proposed EMI.
+
+  - name: foir
+    type: decimal(6,4)
+    range: [0, 5]
+    definition: >-
+      Baseline fixed-obligation-to-income ratio before any proposed new facility.
+      Equal to dti in this version; the underwriting agent recomputes it with the
+      proposed EMI included.
+
+  - name: active_loan_count
+    type: integer
+  - name: total_loan_amount
+    type: decimal(18,2)
+    unit: INR
+  - name: total_outstanding
+    type: decimal(18,2)
+    unit: INR
+    metric_ref: metric.total_outstanding@1.0.0
+
+  - name: dpd_current
+    type: integer
+    description: Days past due on the worst open facility right now
+  - name: dpd_max_12m
+    type: integer
+    description: Worst days-past-due observed across the full stored history
+    metric_ref: metric.dpd_max_12m@1.1.0
+
+  - name: default_history_flag
+    type: boolean
+    definition: True when dpd_max_12m >= 90 at any point in history
+
+  - name: collateral_value
+    type: decimal(18,2)
+    unit: INR
+  - name: collateral_coverage_ratio
+    type: decimal(8,4)
+    definition: collateral_value / total_outstanding
+    caveat: Null when there is no outstanding; do not treat as zero coverage.
+
+  - name: bureau_enquiries_6m
+    type: integer
+    description: Credit enquiries in the last 6 months. A spike indicates credit hunger.
+  - name: credit_vintage_months
+    type: integer
+  - name: bureau_delinquencies_24m
+    type: integer
+
+  - name: risk_score
+    type: decimal(6,2)
+    range: [0, 100]
+    definition: >-
+      Transparent scorecard, higher is riskier:
+      GREATEST(0, 750 - credit_score) * 0.25, plus LEAST(dpd_max_12m, 180) * 0.25,
+      plus GREATEST(0, dti - 0.30) * 100, plus 40 when any facility is 90+ days
+      past due, capped at 100.
+    metric_ref: metric.risk_score@1.0.0
+    caveat: >-
+      This is not a calibrated probability of default. It is an explainable
+      triage score. A production PD model would be governed separately under
+      model risk policy.
+
+  - name: risk_band
+    type: string
+    enum: [LOW, MEDIUM, HIGH, VERY_HIGH]
+    definition: LOW < 25 <= MEDIUM < 50 <= HIGH < 75 <= VERY_HIGH
+    metric_ref: metric.risk_band@1.0.0
+
+  - name: _gold_updated_at
+    type: timestamp
+
+consumers:
+  - data-product-copilot
+  - credit-risk-underwriting
+  - portfolio_reporting
+  - collections

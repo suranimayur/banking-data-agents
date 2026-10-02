@@ -1,0 +1,29 @@
+name: Deploy dev
+
+# Merge to main deploys dev, automatically, with no approval. Dev is where a change
+# is *supposed* to land first, and a step that requires a human here is a step that
+# gets skipped. The success criterion this serves is "commit to dev deployment in
+# under 15 minutes, fully automated".
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  deploy:
+    uses: ./.github/workflows/deploy.yml
+    with:
+      environment: dev
+      # Empty: build the image from this commit. Dev is also the only environment
+      # allowed to deploy an unpinned artifact, because nothing depends on dev.
+      image_tag: ""
+      promote: false
+    # `vars` are repository-scoped and read by the reusable workflow through the
+    # caller's context; `secrets` are not needed at all because there is no
+    # long-lived credential to pass.
+    secrets: inherit
