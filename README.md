@@ -15,6 +15,7 @@ Versioned metrics · enforced SQL guardrails · evidence-carrying answers
 [![Ruff](https://img.shields.io/badge/lint-ruff%20clean-261230)](https://docs.astral.sh/ruff/)
 [![Eval](https://img.shields.io/badge/eval%20gate-31%2F31%20(100%25)-brightgreen)](#verification)
 [![Environments](https://img.shields.io/badge/environments-dev%20%C2%B7%20staging%20%C2%B7%20prod-informational)](#ci-cd)
+[![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
 [**Playbook**](docs/README.md) · [**Technologies**](docs/technologies/README.md) · [**Quickstart**](#quickstart) · [**Architecture**](#architecture)
 
@@ -42,6 +43,7 @@ Versioned metrics · enforced SQL guardrails · evidence-carrying answers
 - [CI/CD](#ci-cd)
 - [Repository layout](#repository-layout)
 - [Documentation](#documentation)
+- [License](#license)
 
 ---
 
@@ -358,6 +360,16 @@ plus a runnable exercise.
 · Bedrock & AgentCore · Pydantic · FastAPI & ASGI · Streamlit · Rich/structlog/tenacity
 · CDK · GitHub Actions & OIDC · pytest & moto · Ruff & mypy · CloudWatch EMF · and a
 [capstone](docs/technologies/18-from-zero-to-hero.md) that ties it together.
+
+---
+
+## License
+
+Released under the **MIT License**. See [LICENSE](LICENSE) for the full text.
+
+```
+Copyright (c) 2026 Mayurkumar Surani
+```
 
 ---
 
