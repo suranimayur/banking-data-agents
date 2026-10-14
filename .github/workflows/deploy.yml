@@ -131,7 +131,7 @@ jobs:
 
       - name: scan the image before deploying it
         if: inputs.image_tag == ''
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           # HIGH and CRITICAL fail the build; anything lower is reported and triaged.
           image-ref: ${{ steps.ecr.outputs.registry }}/bda-${{ inputs.environment }}-api:${{ steps.tag.outputs.image_tag }}
