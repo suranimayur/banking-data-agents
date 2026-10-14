@@ -71,7 +71,7 @@ jobs:
 
       - name: open an issue when drift is found
         if: steps.diff.outputs.drift == 'true'
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         env:
           ENV: ${{ matrix.environment }}
         with:

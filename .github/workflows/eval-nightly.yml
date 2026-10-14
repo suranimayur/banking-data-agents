@@ -82,7 +82,7 @@ jobs:
 
       - name: open a regression issue
         if: steps.compare.outputs.regression == 'true'
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         with:
           script: |
             const detail = `${{ steps.compare.outputs.regression_detail }}`;
