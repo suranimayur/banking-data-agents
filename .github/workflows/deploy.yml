@@ -78,7 +78,7 @@ jobs:
           enable-cache: true
 
       - name: assume the deploy role
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@v6
         with:
           # The only credential in the repository is this ARN, which is useless
           # without a GitHub-issued OIDC token from the right environment.
